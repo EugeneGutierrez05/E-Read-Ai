@@ -63,8 +63,8 @@ router.post('/auth/register', (req, res) => {
   const mail = email.trim().toLowerCase();
   if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(mail))
     return res.status(409).json({ error: 'Email is already registered' });
-  const info = db.prepare('INSERT INTO users (full_name,email,password_hash) VALUES (?,?,?)')
-    .run(fullName.trim(), mail, bcrypt.hashSync(password, 10));
+  const info = db.prepare('INSERT INTO users (full_name,email,password) VALUES (?,?,?)')
+  .run(fullName.trim(), mail, password);
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
   res.status(201).json({ token: sign({ sub: user.id, role: user.role }), user: publicUser(user) });
 });
@@ -73,7 +73,7 @@ router.post('/auth/login', (req, res) => {
   const { email, password } = req.body || {};
   if (!emailOk(email) || typeof password !== 'string') return res.status(400).json({ error: 'Email and password are required' });
   const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.trim().toLowerCase());
-  if (!user || !bcrypt.compareSync(password, user.password_hash))
+  if (!user || password !== user.password)
     return res.status(401).json({ error: 'Incorrect email or password' });
   res.json({ token: sign({ sub: user.id, role: user.role }), user: publicUser(user) });
 });
