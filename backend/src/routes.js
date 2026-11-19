@@ -63,8 +63,8 @@ router.post('/auth/register', (req, res) => {
   const mail = email.trim().toLowerCase();
   if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(mail))
     return res.status(409).json({ error: 'Email is already registered' });
-  const info = db.prepare('INSERT INTO users (full_name,email,password) VALUES (?,?,?)')
-  .run(fullName.trim(), mail, password);
+  const info = db.prepare('INSERT INTO users (full_name,email,password_hash) VALUES (?,?,?)')
+  .run(fullName.trim(), mail, bcrypt.hashSync(password, 10));
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
   res.status(201).json({ token: sign({ sub: user.id, role: user.role }), user: publicUser(user) });
 });
@@ -73,7 +73,7 @@ router.post('/auth/login', (req, res) => {
   const { email, password } = req.body || {};
   if (!emailOk(email) || typeof password !== 'string') return res.status(400).json({ error: 'Email and password are required' });
   const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.trim().toLowerCase());
-  if (!user || password !== user.password)
+  if (!user || !bcrypt.compareSync(password, user.password_hash))
     return res.status(401).json({ error: 'Incorrect email or password' });
   res.json({ token: sign({ sub: user.id, role: user.role }), user: publicUser(user) });
 });
@@ -101,7 +101,7 @@ router.get('/auth/me', auth(), (req, res) => {
 // ---------- books ----------
 const bookRow = (b) => ({
   id: b.id, title: b.title, author: b.author, category: b.category, description: b.description,
-  coverUrl: b.cover_url, license: b.license, source: b.source, year: b.year,
+  coverUrl: `/api/books/${b.id}/cover`, license: b.license, source: b.source, year: b.year,
 });
 
 router.get('/books', auth(false), (req, res) => {
@@ -126,6 +126,39 @@ router.get('/books/:id', (req, res) => {
   const b = db.prepare('SELECT * FROM books WHERE id = ?').get(req.params.id);
   if (!b) return res.status(404).json({ error: 'Book not found' });
   res.json({ book: bookRow(b) });
+});
+
+router.get('/books/:id/cover', (req, res) => {
+  const b = db.prepare('SELECT title, author, category, cover_url FROM books WHERE id = ?').get(req.params.id);
+  if (!b) return res.status(404).json({ error: 'Book not found' });
+  if (/^https:\/\/www\.gutenberg\.org\/cache\/epub\/\d+\/pg\d+\.cover\.medium\.jpg$/.test(b.cover_url || '')) {
+    return res.redirect(302, b.cover_url);
+  }
+  const escapeXml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;',
+  })[char]);
+  const title = escapeXml(b.title);
+  const author = escapeXml(b.author);
+  const category = escapeXml(b.category);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="600" viewBox="0 0 400 600">
+    <defs>
+      <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#9a7355"/>
+        <stop offset="1" stop-color="#4a3527"/>
+      </linearGradient>
+      <filter id="shadow"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-opacity=".25"/></filter>
+    </defs>
+    <rect width="400" height="600" rx="18" fill="url(#bg)"/>
+    <rect x="36" y="36" width="328" height="528" rx="12" fill="none" stroke="#d8c6a8" stroke-width="3" opacity=".7"/>
+    <circle cx="200" cy="185" r="78" fill="#d8c6a8" opacity=".12"/>
+    <path d="M200 108v154M123 185h154" stroke="#d8c6a8" stroke-width="8" stroke-linecap="round" opacity=".24"/>
+    <text x="200" y="370" fill="#fff" font-family="Georgia,serif" font-size="34" font-weight="700" text-anchor="middle">
+      ${title.replace(/.{38}\s|.{38}/g, '$&\n')}
+    </text>
+    <text x="200" y="480" fill="#f3eadc" font-family="Arial,sans-serif" font-size="22" text-anchor="middle">${author}</text>
+    <text x="200" y="526" fill="#d8c6a8" font-family="Arial,sans-serif" font-size="16" text-anchor="middle">${category}</text>
+  </svg>`;
+  res.set('Content-Type', 'image/svg+xml').set('Cache-Control', 'public, max-age=86400').send(svg);
 });
 
 // Download: limits are ENFORCED HERE (guest 5 per session, registered 10 per account).

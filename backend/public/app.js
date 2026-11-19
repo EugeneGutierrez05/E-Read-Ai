@@ -133,17 +133,24 @@
   }
 
   function bookCard(b) {
+    const coverUrl = b.coverUrl?.startsWith('/api/')
+      ? (apiBase.startsWith('http') ? new URL(b.coverUrl, apiBase).toString() : b.coverUrl)
+      : b.coverUrl;
     return `<button class="book" data-id="${b.id}" aria-label="${esc(b.title)}">
-      <div class="cover">
-        ${b.coverUrl ? `<img src="${esc(b.coverUrl)}" alt="" loading="lazy">` : ''}
-        <span style="position:relative; z-index:2">${esc(b.title)}</span>
-      </div>
+      ${coverMarkup(b.title, coverUrl)}
       <div class="meta">
         <b>${esc(b.title)}</b>
         <span class="muted" style="font-size:.82rem">${esc(b.author)}</span><br>
         <span class="chip">${esc(b.category)}</span>
       </div>
     </button>`;
+  }
+  function coverMarkup(title, coverUrl) {
+    return `<div class="cover">
+      ${coverUrl
+        ? `<img src="${esc(coverUrl)}" data-fallback="${esc(title)}" alt="" loading="lazy">`
+        : `<span class="cover-fallback">${esc(title)}</span>`}
+    </div>`;
   }
   function bindBooks(root) {
     root.querySelectorAll('.book').forEach((el) => (el.onclick = () => openBook(el.dataset.id)));
@@ -277,6 +284,9 @@
   // ---------- book modal ----------
   async function openBook(id) {
     const { book: b } = await api('/books/' + id);
+    const coverUrl = b.coverUrl?.startsWith('/api/')
+      ? (apiBase.startsWith('http') ? new URL(b.coverUrl, apiBase).toString() : b.coverUrl)
+      : b.coverUrl;
     let fav = false, inLib = false;
     if (!isGuest()) {
       const [f, l] = await Promise.all([api('/favorites'), api('/library')]);
@@ -285,10 +295,7 @@
     const dlg = document.createElement('dialog');
     const paint = () => {
       dlg.innerHTML = `<div class="modal">
-        <div class="cover">
-          ${b.coverUrl ? `<img src="${esc(b.coverUrl)}" alt="">` : ''}
-          <span style="position:relative; z-index:2">${esc(b.title)}</span>
-        </div>
+        ${coverMarkup(b.title, coverUrl)}
         <div>
           <h2>${esc(b.title)}</h2>
           <p class="muted" style="margin:0.2rem 0 0.8rem">By <b>${esc(b.author)}</b>${b.year ? ' • ' + (b.year < 0 ? Math.abs(b.year) + ' BC' : b.year) : ''}</p>
@@ -342,7 +349,14 @@
     try { await refreshMe(); } catch { clearSession(); }
     render();
   }
-  document.addEventListener('error', (e) => { if (e.target.tagName === 'IMG') e.target.remove(); }, true);
+  document.addEventListener('error', (e) => {
+    if (e.target.tagName === 'IMG') {
+      const fallback = document.createElement('span');
+      fallback.className = 'cover-fallback';
+      fallback.textContent = e.target.dataset.fallback || '';
+      e.target.replaceWith(fallback);
+    }
+  }, true);
   window.addEventListener('hashchange', render);
   state.token = store.get('token');
   state.token ? boot() : renderAuth();

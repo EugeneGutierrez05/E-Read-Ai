@@ -41,6 +41,12 @@ test('search and filter', async () => {
   assert.ok((await call('/books?category=Science%20Fiction')).data.total >= 3);
 });
 
+test('book covers redirect to the stored public-domain cover image', async () => {
+  const response = await fetch(base + '/books/1/cover', { redirect: 'manual' });
+  assert.equal(response.status, 302);
+  assert.match(response.headers.get('location'), /^https:\/\/www\.gutenberg\.org\/cache\/epub\/\d+\/pg\d+\.cover\.medium\.jpg$/);
+});
+
 test('guest limited to 5 downloads (backend enforced)', async () => {
   const g = await call('/auth/guest', { method: 'POST' });
   const t = g.data.token;
