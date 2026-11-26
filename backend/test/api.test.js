@@ -41,10 +41,19 @@ test('search and filter', async () => {
   assert.ok((await call('/books?category=Science%20Fiction')).data.total >= 3);
 });
 
-test('book covers redirect to the stored public-domain cover image', async () => {
-  const response = await fetch(base + '/books/1/cover', { redirect: 'manual' });
-  assert.equal(response.status, 302);
-  assert.match(response.headers.get('location'), /^https:\/\/www\.gutenberg\.org\/cache\/epub\/\d+\/pg\d+\.cover\.medium\.jpg$/);
+test('book covers return title-specific illustrated SVGs', async () => {
+  const pride = await fetch(base + '/books/1/cover');
+  const prideSvg = await pride.text();
+  assert.equal(pride.status, 200);
+  assert.match(pride.headers.get('content-type'), /image\/svg\+xml/);
+  assert.match(prideSvg, /Pride and Prejudice<\/tspan>/);
+  assert.match(prideSvg, /E-READ CLASSICS/);
+
+  const moby = await fetch(base + '/books/9/cover');
+  const mobySvg = await moby.text();
+  assert.equal(moby.status, 200);
+  assert.match(mobySvg, /Moby Dick/);
+  assert.match(mobySvg, /<path d="M73 258/);
 });
 
 test('guest limited to 5 downloads (backend enforced)', async () => {
