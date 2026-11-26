@@ -1,7 +1,7 @@
-# E-Library AI — Phase 1 (Project Foundation)
+# E-Library AI — Phase 2 Foundation
 
 IPT102 Final Practical Examination · University of Batangas
-Integrated Web + Android digital library with an embedded agentic AI assistant.
+Integrated Web + Android digital library with a shared REST backend, admin book management, and a catalog-tool assistant.
 
 ```
 elibrary-ai/
@@ -17,7 +17,7 @@ elibrary-ai/
 ```bash
 cd backend
 npm install
-npm test          # 7 API tests
+npm test          # backend API tests
 npm start         # http://localhost:3000
 ```
 Open http://localhost:3000 → Register, Log in, or **Continue as Guest**.
@@ -31,24 +31,33 @@ Docker: `docker build -t elibrary-ai . && docker run -p 3000:3000 -e JWT_SECRET=
 
 1. Start the backend (step 1).
 2. From the project root, run `npm ci` and `npm run android:sync`.
-3. Android Studio → **Open** → select the `android/` folder, let Gradle sync (JDK 21), then run on an emulator. The app reuses the web UI in a Capacitor shell and calls the backend at `http://10.0.2.2:3000/api/`.
-   - Real phone: edit `window.ELIBRARY_API_BASE_URL` in `backend/public/api-config.js` to `http://<PC-LAN-IP>:3000/api`, then run `npm run android:sync` again. Ensure the phone and computer share a network and the computer firewall permits port 3000.
-   - Hosted backend: set the same value to `https://<your-app>/api` and sync again. Use HTTPS for deployed apps.
+3. Android Studio → **Open** → select the `android/` folder, let Gradle sync (JDK 21), then run on an emulator. The shared UI uses `window.ELIBRARY_ANDROID_API_BASE_URL` from `backend/public/api-config.js` to connect to the hosted API (`https://e-read-ai.onrender.com/api`).
+   - To use a local backend on an emulator, set that value to `http://10.0.2.2:3000/api`; for a real phone, use `http://<PC-LAN-IP>:3000/api` and ensure both devices share a network and the computer firewall permits port 3000.
+   - Run `npm run android:sync` after changing the web UI or API configuration, then rebuild/reinstall the Android app.
 4. **Build → Build APK(s)** creates the debug APK at `android/app/build/outputs/apk/debug/app-debug.apk`.
 
-## 3. Phase 1 checklist (from the exam sheet)
+## 3. Phase 2 functionality
+
+- Web and Android reuse one Capacitor-compatible UI and call the same Express API, so accounts, catalog, favorites, library, and download tracking use one SQLite database.
+- Admins can add, edit, and delete catalog entries from the web admin dashboard. API routes validate input and enforce admin roles.
+- The embedded catalog assistant searches, looks up, compares, and recommends real catalog entries. Saving a book requires a signed, short-lived confirmation token. Tool calls are written to `ai_tool_logs`.
+- The assistant currently uses built-in catalog tools and simple intent matching; an external generative AI model is **not configured** and would require a server-side provider key.
+- The seeded catalog has 20 sample public-domain books; admins can manage titles through the dashboard.
+
+The Render free instance has no persistent disk. SQLite data on that instance may reset after restarts or redeploys; use persistent storage or migrate databases before relying on hosted accounts and user data.
+
+## 4. Phase 1 checklist (from the exam sheet)
 
 | Requirement | Status |
 |---|---|
-| Initial Android app | ✅ Capacitor app reusing the web UI: auth, dashboard, catalog, library, AI plan |
-| Initial web app | ✅ Responsive SPA served by the backend |
+| Android app | ✅ Capacitor app reusing the web UI: auth, dashboard, catalog, library, and catalog assistant |
+| Web app | ✅ Responsive SPA served by the backend |
 | Guest access | ✅ `POST /api/auth/guest` (5-download cap) |
 | Registration / login / logout | ✅ bcrypt + JWT, validated input |
 | Basic dashboard navigation | ✅ web and Android |
 | Shared backend connection | ✅ both platforms call the same REST API |
 | Initial database structure | ✅ 7 tables, see docs |
-| Planned AI agent architecture | ✅ `GET /api/ai/architecture` + UI screen + docs |
+| Embedded catalog assistant | ✅ `POST /api/ai/chat` uses database tools; no external model configured |
 | GitHub repository | ▶ `git init && git add . && git commit` then push |
 
-Also already in place early: backend-enforced download limits, favorites, My Library, admin stats.
-Catalog currently seeds 20 public-domain (Project Gutenberg) books; Phase 2 grows it to 200+.
+Also included: backend-enforced download limits, favorites, My Library, admin analytics, and CRUD catalog controls.

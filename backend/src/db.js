@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS downloads (
 CREATE INDEX IF NOT EXISTS idx_dl_user  ON downloads(user_id);
 CREATE INDEX IF NOT EXISTS idx_dl_guest ON downloads(guest_id);
 
--- Planned for Phase 2/3: audit trail of every AI agent tool call.
+-- Audit trail of every catalog assistant tool call.
 CREATE TABLE IF NOT EXISTS ai_tool_logs (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,

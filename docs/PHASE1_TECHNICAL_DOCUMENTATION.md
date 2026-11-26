@@ -1,4 +1,4 @@
-# E-Library AI — Initial Technical Documentation (Phase 1)
+# E-Library AI — Technical Documentation (Phase 1 and Phase 2 Foundation)
 
 ## 1. System overview
 E-Library AI is a digital library where users find and download **legally free** books (public domain / open license), with an AI assistant embedded in both a website and an Android app. Both clients share one REST API and one database.
@@ -6,7 +6,7 @@ E-Library AI is a digital library where users find and download **legally free**
 - **Target users:** students and general readers; administrators manage the catalog.
 - **Guest Mode:** no account, max **5** downloads per guest session.
 - **Registered Mode:** max **10** downloads per account, favorites, My Library.
-- **Catalog goal:** 200+ unique books (20 seeded in Phase 1).
+- **Catalog:** 20 seeded public-domain books; admins can add, edit, and delete entries.
 
 ## 2. Technology stack & justification
 | Layer | Choice | Why |
@@ -17,8 +17,8 @@ E-Library AI is a digital library where users find and download **legally free**
 | Database | SQLite (better-sqlite3) | Zero-config, relational, one file shared by every client through the API |
 | Auth | bcryptjs + JWT (7 days) | Stateless; same token flow for web and Android |
 | Security | helmet (CSP), CORS, rate limiting, input validation, parameterized SQL | Meets cybersecurity requirement |
-| AI (Phase 2) | LLM with tool/function calling, run server-side | Real tool-based actions on real data |
-| DevOps | Docker, GitHub Actions, Wasmer hosting | Required by the exam |
+| AI assistant | Backend catalog tools with signed confirmation for library writes | Tool actions operate on the shared database; an LLM provider is not configured |
+| DevOps | Docker, GitHub Actions, Render hosting | Container deployment and automated builds |
 
 ## 3. Architecture
 ```mermaid
@@ -27,12 +27,11 @@ flowchart LR
   W[Web App<br/>HTML/JS] -->|HTTPS + JWT| API
   subgraph Backend [Express Backend]
     API[REST API /api] --> AUTH[Auth + limits]
-    API --> AG[AI Agent Orchestrator - Phase 2]
+    API --> AG[Catalog assistant dispatcher]
     AG --> T[Tools: search_books, get_book_details,<br/>compare_books, recommend_books, save_to_library]
   end
   AUTH --> DB[(SQLite shared DB)]
   T --> DB
-  AG -->|prompt + tool schemas| LLM[LLM API]
 ```
 
 ## 4. Database design
@@ -56,25 +55,31 @@ flowchart LR
 | POST `/api/books/:id/download` | ✔ | Enforces 5 / 10 limit, returns legal URL |
 | GET/PUT/DELETE `/api/favorites[/:id]`, `/api/library[/:id]` | registered | Sync across clients |
 | GET `/api/admin/stats` | admin | Dashboard counts |
-| GET `/api/ai/architecture` | – | Planned agent design |
+| GET `/api/admin/books` | admin | List/search books for management |
+| POST/PUT/DELETE `/api/admin/books[/:id]` | admin | Create, update, and delete catalog entries |
+| GET `/api/ai/architecture` | – | Assistant tools and safety details |
+| POST `/api/ai/chat` | ✔ | Search, detail, compare, recommend, or request a confirmed library save |
 
-## 6. Planned AI agent (Phase 2)
-`POST /api/ai/chat {message, conversationId}` → backend sends conversation + tool schemas to the LLM → LLM requests a tool → backend executes it under the caller's JWT against the real DB → result returned to LLM → final answer to the app. `save_to_library` is two-step: the agent asks for confirmation, and only an explicit "yes" triggers the write. Every call is logged in `ai_tool_logs`. The chat panel is built into both clients (no external redirect).
+## 6. Embedded catalog assistant
+The shared chat panel is available to web and Android users. The backend dispatches `search_books`, `get_book_details`, `compare_books`, `recommend_books`, and `save_to_library` actions against the SQLite catalog. A save request returns a short-lived signed confirmation token; the write occurs only when the user explicitly confirms it. Tool invocations are written to `ai_tool_logs`.
 
-## 7. Security measures so far
+The current implementation uses built-in intent matching and database tools; it does not call an LLM. A generative model can be added later with its API key stored only in server environment settings.
+
+## 7. Administrator book management
+The web admin dashboard lists catalog entries and provides add/edit/delete forms. The API validates required fields, restricts download links to HTTPS, prevents duplicate title-author pairs, and enforces the admin role on every management route.
+
+## 8. Security measures so far
 Android debug builds permit HTTP and mixed content for local development. Release builds keep both disabled; deployed backends should use HTTPS.
 
 Password hashing (bcrypt), JWT auth, role checks (user/admin/guest), backend-enforced download limits inside a DB transaction, validated inputs, parameterized queries, CSP + secure headers, auth rate limiting, HTML escaping in the web client, HTTPS-only network config on Android (cleartext only for local dev hosts).
 
-## 8. Testing
-`backend/test/api.test.js` (7 passing tests): health/catalog, register/login/logout, duplicate & weak-password rejection, search/filter, guest 5-download cap, user 10-download cap, favorites/library, admin-only access. The web UI was also exercised end-to-end in a headless browser.
+## 9. Testing
+`backend/test/api.test.js` covers health/catalog, registration/login/logout, search/filter, download limits, favorites/library, admin authorization and CRUD, title-specific covers, and assistant tool execution and confirmation. The shared admin and chat UI were also smoke-tested in a browser.
 
-## 9. Phase 2 plan (Nov 21)
+## 10. Remaining work
 1. Expand catalog to 200+ unique Project Gutenberg books via import script.
-2. Admin: add/edit/delete books, analytics.
-3. Implement AI agent + five tools; chat UI on web and Android.
-4. Android polish (detail screen, offline cache); more tests; deploy to Wasmer.
+2. Configure a generative AI provider and add provider-backed reasoning.
+3. Android polish (offline cache); deploy with persistent SQLite storage or migrate to a hosted database.
 
-## 10. Known risks
-- Wasmer Edge may not support the native `better-sqlite3` module; fallback is a Docker-based host or swapping to a pure-JS/WASM SQLite.
-- SQLite file storage must be on persistent disk in production.
+## 11. Known risks
+- SQLite file storage must be on persistent disk in production. Render's free instance does not provide a persistent disk.

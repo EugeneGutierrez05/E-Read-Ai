@@ -46,11 +46,42 @@ function downloadStatus(auth) {
 
 const emailOk = (e) => typeof e === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) && e.length <= 254;
 const passOk = (p) => typeof p === 'string' && p.length >= 8 && p.length <= 72 && /[A-Za-z]/.test(p) && /\d/.test(p);
+const bookIdParam = (value) => /^\d+$/.test(value) ? Number(value) : Number.NaN;
+const bookInput = (body) => {
+  const fields = ['title', 'author', 'category', 'downloadUrl', 'license', 'source'];
+  for (const field of fields) {
+    if (typeof body?.[field] !== 'string' || !body[field].trim() || body[field].trim().length > 500)
+      return { error: `${field} is required and must be 1-500 characters` };
+  }
+  if (typeof body.description !== 'string' || body.description.trim().length > 4000)
+    return { error: 'description must be 0-4000 characters' };
+  let downloadUrl;
+  try { downloadUrl = new URL(body.downloadUrl.trim()); }
+  catch { return { error: 'downloadUrl must be a valid HTTPS URL' }; }
+  if (downloadUrl.protocol !== 'https:') return { error: 'downloadUrl must use HTTPS' };
+  const year = body.year === '' || body.year == null ? null : Number(body.year);
+  if (year !== null && (!Number.isInteger(year) || year < -3000 || year > new Date().getFullYear()))
+    return { error: 'year must be a valid integer year' };
+  return {
+    value: {
+      title: body.title.trim(), author: body.author.trim(), category: body.category.trim(),
+      description: body.description.trim(), downloadUrl: downloadUrl.toString(),
+      license: body.license.trim(), source: body.source.trim(), year,
+    },
+  };
+};
+const adminBookRow = (book) => ({
+  ...bookRow(book), downloadUrl: book.download_url,
+});
+const recordAiTool = (authInfo, name, args, result) => {
+  db.prepare('INSERT INTO ai_tool_logs (user_id, tool_name, arguments, result) VALUES (?,?,?,?)')
+    .run(authInfo.role === 'guest' ? null : authInfo.sub, name, JSON.stringify(args), JSON.stringify(result));
+};
 
 // ---------- health ----------
 router.get('/health', (_req, res) => {
   const books = db.prepare('SELECT COUNT(*) n FROM books').get().n;
-  res.json({ status: 'ok', service: 'elibrary-ai', phase: 1, books });
+  res.json({ status: 'ok', service: 'elibrary-ai', phase: 2, books });
 });
 
 // ---------- auth ----------
@@ -263,7 +294,7 @@ router.delete('/library/:id', auth(), registeredOnly, (req, res) => {
   res.json({ inLibrary: false });
 });
 
-// ---------- admin (initial) ----------
+// ---------- admin ----------
 router.get('/admin/stats', auth(), adminOnly, (_req, res) => {
   const n = (sql) => db.prepare(sql).get().n;
   res.json({
@@ -275,13 +306,62 @@ router.get('/admin/stats', auth(), adminOnly, (_req, res) => {
   });
 });
 
-// ---------- AI agent (planned architecture; implemented in Phase 2) ----------
+router.get('/admin/books', auth(), adminOnly, (req, res) => {
+  const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 50));
+  const where = q ? 'WHERE title LIKE ? OR author LIKE ? OR category LIKE ?' : '';
+  const params = q ? [`%${q}%`, `%${q}%`, `%${q}%`] : [];
+  const total = db.prepare(`SELECT COUNT(*) n FROM books ${where}`).get(...params).n;
+  const books = db.prepare(`SELECT * FROM books ${where} ORDER BY title LIMIT ? OFFSET ?`)
+    .all(...params, limit, (page - 1) * limit).map(adminBookRow);
+  res.json({ books, total, page, limit });
+});
+
+router.post('/admin/books', auth(), adminOnly, (req, res) => {
+  const parsed = bookInput(req.body);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const { title, author, category, description, downloadUrl, license, source, year } = parsed.value;
+  if (db.prepare('SELECT 1 FROM books WHERE title = ? AND author = ?').get(title, author))
+    return res.status(409).json({ error: 'A book with this title and author already exists' });
+  const result = db.prepare(`INSERT INTO books
+    (title, author, category, description, download_url, license, source, year)
+    VALUES (?,?,?,?,?,?,?,?)`).run(title, author, category, description, downloadUrl, license, source, year);
+  const book = db.prepare('SELECT * FROM books WHERE id = ?').get(result.lastInsertRowid);
+  res.status(201).json({ book: adminBookRow(book) });
+});
+
+router.put('/admin/books/:id', auth(), adminOnly, (req, res) => {
+  const parsed = bookInput(req.body);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const id = bookIdParam(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid book id' });
+  const existing = db.prepare('SELECT 1 FROM books WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ error: 'Book not found' });
+  const { title, author, category, description, downloadUrl, license, source, year } = parsed.value;
+  if (db.prepare('SELECT 1 FROM books WHERE title = ? AND author = ? AND id != ?').get(title, author, id))
+    return res.status(409).json({ error: 'A book with this title and author already exists' });
+  db.prepare(`UPDATE books SET title=?, author=?, category=?, description=?, download_url=?,
+    license=?, source=?, year=? WHERE id=?`)
+    .run(title, author, category, description, downloadUrl, license, source, year, id);
+  res.json({ book: adminBookRow(db.prepare('SELECT * FROM books WHERE id = ?').get(id)) });
+});
+
+router.delete('/admin/books/:id', auth(), adminOnly, (req, res) => {
+  const id = bookIdParam(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid book id' });
+  const result = db.prepare('DELETE FROM books WHERE id = ?').run(id);
+  if (!result.changes) return res.status(404).json({ error: 'Book not found' });
+  res.json({ deleted: true });
+});
+
+// ---------- database-backed catalog assistant ----------
 router.get('/ai/architecture', (_req, res) => {
   res.json({
-    status: 'planned',
+    status: 'active',
     phase: 2,
-    pattern: 'LLM tool-calling agent running on the backend; embedded as a chat panel in web and Android',
-    endpoint: 'POST /api/ai/chat  { message, conversationId }',
+    pattern: 'Embedded catalog agent dispatching server-side tools against the shared database',
+    endpoint: 'POST /api/ai/chat  { message } or { confirmationToken }',
     tools: [
       { name: 'search_books', description: 'Search the real catalog by title, author or category' },
       { name: 'get_book_details', description: 'Retrieve full details for a book id' },
@@ -289,8 +369,102 @@ router.get('/ai/architecture', (_req, res) => {
       { name: 'recommend_books', description: 'Recommend books from the catalog based on stated interests' },
       { name: 'save_to_library', description: 'Save a book to My Library (requires explicit user confirmation)' },
     ],
-    safety: ['Tools run server-side under the caller\'s JWT', 'save_to_library needs a confirmation step', 'Every tool call logged in ai_tool_logs'],
+    provider: 'Built-in catalog assistant; an external model provider can be configured later',
+    safety: ['Tools run server-side under the caller\'s JWT', 'save_to_library requires a signed confirmation token', 'Every tool call is logged in ai_tool_logs'],
   });
+});
+
+router.post('/ai/chat', auth(), (req, res) => {
+  const { message, confirmationToken } = req.body || {};
+  if (typeof confirmationToken === 'string' && confirmationToken) {
+    let confirmation;
+    try { confirmation = jwt.verify(confirmationToken, JWT_SECRET); }
+    catch { return res.status(400).json({ error: 'Confirmation expired or invalid. Ask the assistant to prepare the action again.' }); }
+    if (confirmation.purpose !== 'save-to-library' || confirmation.sub !== req.auth.sub || req.auth.role === 'guest')
+      return res.status(403).json({ error: 'This confirmation is not valid for your account' });
+    const book = db.prepare('SELECT * FROM books WHERE id = ?').get(confirmation.bookId);
+    if (!book) return res.status(404).json({ error: 'Book no longer exists' });
+    db.prepare('INSERT OR IGNORE INTO library (user_id, book_id, added_via) VALUES (?,?,?)')
+      .run(req.auth.sub, book.id, 'ai_agent');
+    const result = { id: book.id, title: book.title, saved: true };
+    recordAiTool(req.auth, 'save_to_library', { bookId: book.id, confirmed: true }, result);
+    return res.json({ reply: `“${book.title}” is now in your library.`, toolCalls: ['save_to_library'], books: [bookRow(book)] });
+  }
+  if (typeof message !== 'string' || !message.trim() || message.length > 1000)
+    return res.status(400).json({ error: 'Message must be 1-1000 characters' });
+
+  const prompt = message.trim();
+  const normalized = prompt.toLowerCase();
+  const booksInPrompt = () => db.prepare('SELECT * FROM books ORDER BY length(title) DESC').all()
+    .filter((book) => {
+      const baseTitle = book.title.split(/[;:]/)[0].trim().toLowerCase();
+      return normalized.includes(book.title.toLowerCase()) || normalized.includes(baseTitle);
+    });
+  const findBook = (text) => booksInPrompt().find((book) => text.includes(book.title.toLowerCase())
+    || text.includes(book.title.split(/[;:]/)[0].trim().toLowerCase()));
+  const searchBooks = (query) => {
+    const terms = query.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length > 2);
+    if (!terms.length) return [];
+    const predicates = terms.map(() => '(lower(title) LIKE ? OR lower(author) LIKE ? OR lower(category) LIKE ?)');
+    const params = terms.flatMap((term) => [`%${term}%`, `%${term}%`, `%${term}%`]);
+    return db.prepare(`SELECT * FROM books WHERE ${predicates.join(' OR ')} ORDER BY title LIMIT 6`).all(...params);
+  };
+  let toolName, args, results = [], reply, pendingAction;
+  const exactBook = findBook(normalized);
+
+  if (/\b(compare|difference|vs\.?|versus)\b/.test(normalized)) {
+    toolName = 'compare_books';
+    results = booksInPrompt().slice(0, 4);
+    args = { titles: results.map((book) => book.title) };
+    reply = results.length >= 2
+      ? `Here are ${results.length} books from the catalog to compare.`
+      : 'Name two catalog titles you would like me to compare.';
+  } else if (/\b(save|add|put)\b/.test(normalized) && /\b(library|reading list|shelf)\b/.test(normalized)) {
+    toolName = 'save_to_library';
+    args = { requestedTitle: exactBook?.title || null };
+    if (!exactBook) reply = 'Tell me the exact title you want to add to your library.';
+    else if (req.auth.role === 'guest') reply = 'Please register or log in to save books to your library.';
+    else {
+      pendingAction = {
+        type: 'save_to_library',
+        book: bookRow(exactBook),
+        confirmationToken: jwt.sign(
+          { sub: req.auth.sub, purpose: 'save-to-library', bookId: exactBook.id },
+          JWT_SECRET,
+          { expiresIn: '5m' },
+        ),
+      };
+      reply = `I found “${exactBook.title}”. Confirm below if you want to save it to your library.`;
+    }
+  } else if (/\b(recommend|suggest|similar|what should i read)\b/.test(normalized)) {
+    toolName = 'recommend_books';
+    const category = db.prepare('SELECT category FROM books GROUP BY category').all()
+      .map((row) => row.category).find((name) => normalized.includes(name.toLowerCase())
+        || (name === 'Science Fiction' && /\b(sci[\s-]?fi|scifi)\b/.test(normalized)));
+    args = { category: category || null };
+    results = category
+      ? db.prepare('SELECT * FROM books WHERE category = ? ORDER BY title LIMIT 6').all(category)
+      : db.prepare('SELECT * FROM books ORDER BY title LIMIT 6').all();
+    reply = category
+      ? `Here are some ${category} titles from the catalog.`
+      : 'Here are a few books from the catalog to get you started.';
+  } else if (exactBook) {
+    toolName = 'get_book_details';
+    args = { title: exactBook.title };
+    results = [exactBook];
+    reply = `${exactBook.title} by ${exactBook.author}: ${exactBook.description || 'No description is available yet.'}`;
+  } else {
+    toolName = 'search_books';
+    args = { query: prompt };
+    results = searchBooks(prompt);
+    reply = results.length
+      ? `I found ${results.length} matching catalog title${results.length === 1 ? '' : 's'}.`
+      : 'I could not find a matching title. Try a book name, author, or category such as “science fiction”.';
+  }
+
+  const publicBooks = results.map(bookRow);
+  recordAiTool(req.auth, toolName, args, { reply, bookIds: results.map((book) => book.id), pending: Boolean(pendingAction) });
+  res.json({ reply, toolCalls: [toolName], books: publicBooks, ...(pendingAction ? { pendingAction } : {}) });
 });
 
 module.exports = router;

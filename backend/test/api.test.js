@@ -89,3 +89,100 @@ test('admin-only stats', async () => {
   const admin = await call('/auth/login', { method: 'POST', body: { email: 'admin@elibrary.local', password: 'Admin@12345' } });
   assert.equal((await call('/admin/stats', { token: admin.data.token })).status, 200);
 });
+
+test('admin can create, edit, and delete catalog books; regular users are blocked', async () => {
+  const user = await call('/auth/register', {
+    method: 'POST',
+    body: { fullName: 'Catalog User', email: 'catalog@example.com', password: 'Passw0rd1' },
+  });
+  assert.equal((await call('/admin/books', { token: user.data.token })).status, 403);
+  const admin = await call('/auth/login', {
+    method: 'POST',
+    body: { email: 'admin@elibrary.local', password: 'Admin@12345' },
+  });
+  const book = {
+    title: 'Test Admin Book', author: 'Test Author', category: 'Test Category',
+    description: 'A book created by the admin API test.', downloadUrl: 'https://example.org/book.txt',
+    license: 'Public Domain', source: 'Test Source', year: 1900,
+  };
+  const created = await call('/admin/books', { method: 'POST', token: admin.data.token, body: book });
+  assert.equal(created.status, 201);
+  const id = created.data.book.id;
+  assert.equal(created.data.book.downloadUrl, book.downloadUrl);
+  assert.equal((await call('/admin/books', { method: 'POST', token: admin.data.token, body: book })).status, 409);
+  assert.equal((await call('/admin/books', {
+    method: 'POST', token: admin.data.token, body: { ...book, title: 'Bad URL Book', downloadUrl: 'http://example.org/book' },
+  })).status, 400);
+  assert.equal((await call(`/admin/books/${id}oops`, {
+    method: 'DELETE', token: admin.data.token,
+  })).status, 400);
+  const edited = await call(`/admin/books/${id}`, {
+    method: 'PUT', token: admin.data.token, body: { ...book, title: 'Edited Admin Book' },
+  });
+  assert.equal(edited.status, 200);
+  assert.equal(edited.data.book.title, 'Edited Admin Book');
+  assert.equal((await call(`/admin/books/${id}`, { method: 'DELETE', token: admin.data.token })).status, 200);
+  assert.equal((await call(`/admin/books/${id}`, {
+    method: 'PUT', token: admin.data.token, body: book,
+  })).status, 404);
+});
+
+test('catalog assistant searches, compares, and saves only after signed confirmation', async () => {
+  const guest = await call('/auth/guest', { method: 'POST' });
+  const guestSave = await call('/ai/chat', {
+    method: 'POST', token: guest.data.token, body: { message: 'Add Dracula to my library' },
+  });
+  assert.match(guestSave.data.reply, /register or log in/i);
+  assert.equal(guestSave.data.pendingAction, undefined);
+
+  const registered = await call('/auth/register', {
+    method: 'POST',
+    body: { fullName: 'AI User', email: 'ai@example.com', password: 'Passw0rd1' },
+  });
+  const token = registered.data.token;
+  const recommendation = await call('/ai/chat', {
+    method: 'POST', token, body: { message: 'Recommend philosophy books' },
+  });
+  assert.equal(recommendation.status, 200);
+  assert.equal(recommendation.data.toolCalls[0], 'recommend_books');
+  assert.ok(recommendation.data.books.length > 0);
+
+  const sciFi = await call('/ai/chat', {
+    method: 'POST', token, body: { message: 'Recommend classic sci-fi books' },
+  });
+  assert.ok(sciFi.data.books.every((book) => book.category === 'Science Fiction'));
+
+  const comparison = await call('/ai/chat', {
+    method: 'POST', token, body: { message: 'Compare Frankenstein and Dracula' },
+  });
+  assert.equal(comparison.data.toolCalls[0], 'compare_books');
+  assert.equal(comparison.data.books.length, 2);
+  const shortTitleComparison = await call('/ai/chat', {
+    method: 'POST', token, body: { message: 'Compare Moby Dick and Dracula' },
+  });
+  assert.equal(shortTitleComparison.data.books.length, 2);
+
+  const pending = await call('/ai/chat', {
+    method: 'POST', token, body: { message: 'Add Dracula to my library' },
+  });
+  assert.equal(pending.data.toolCalls[0], 'save_to_library');
+  assert.ok(pending.data.pendingAction.confirmationToken);
+  assert.equal((await call('/library', { token })).data.books.length, 0);
+
+  const otherUser = await call('/auth/register', {
+    method: 'POST',
+    body: { fullName: 'Other User', email: 'other-ai@example.com', password: 'Passw0rd1' },
+  });
+  assert.equal((await call('/ai/chat', {
+    method: 'POST',
+    token: otherUser.data.token,
+    body: { confirmationToken: pending.data.pendingAction.confirmationToken },
+  })).status, 403);
+
+  const saved = await call('/ai/chat', {
+    method: 'POST', token, body: { confirmationToken: pending.data.pendingAction.confirmationToken },
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.data.books[0].title, 'Dracula');
+  assert.equal((await call('/library', { token })).data.books[0].title, 'Dracula');
+});

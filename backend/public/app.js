@@ -2,8 +2,11 @@
 (() => {
   'use strict';
   const $app = document.getElementById('app');
-  const apiBase = window.ELIBRARY_API_BASE_URL || (window.Capacitor?.isNativePlatform?.() ? 'http://10.0.2.2:3000/api' : '/api');
-  const state = { token: null, user: null, downloads: null, categories: [], route: 'dashboard', books: { q: '', category: '', page: 1 } };
+  const isNativeApp = window.Capacitor?.isNativePlatform?.() || false;
+  const apiBase = isNativeApp
+    ? (window.ELIBRARY_ANDROID_API_BASE_URL || window.ELIBRARY_API_BASE_URL || 'http://10.0.2.2:3000/api')
+    : (window.ELIBRARY_API_BASE_URL || '/api');
+  const state = { token: null, user: null, downloads: null, categories: [], aiMessages: [], route: 'dashboard', books: { q: '', category: '', page: 1 } };
 
   // ---------- utils ----------
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -31,7 +34,7 @@
   const isGuest = () => state.user?.role === 'guest';
   const isAdmin = () => state.user?.role === 'admin';
   function setSession(token, user) { state.token = token; state.user = user; store.set('token', token); }
-  function clearSession() { state.token = null; state.user = null; state.downloads = null; store.del('token'); }
+  function clearSession() { state.token = null; state.user = null; state.downloads = null; state.aiMessages = []; store.del('token'); }
   async function refreshMe() {
     const d = await api('/auth/me'); state.user = d.user; state.downloads = d.downloads;
   }
@@ -178,13 +181,13 @@
       <div class="card ai-box" style="margin-top:2rem; padding:1.75rem">
         <div style="display:flex; align-items:center; gap:0.6rem;">
           <h3 style="margin:0">✨ E-Read AI Assistant</h3>
-          <span class="badge">Phase 2 Planned</span>
+          <span class="badge">Catalog Agent</span>
         </div>
-        <p class="muted" style="margin:0.5rem 0 1rem">Ask questions about books in natural language, generate instant summaries, and request personalized reading recommendations.</p>
+        <p class="muted" style="margin:0.5rem 0 1rem">Search the live catalog, explore book details, and get reading recommendations.</p>
         <div class="prompts">
           <span class="prompt-chip">🔍 "Find me classic sci-fi novels"</span>
-          <span class="prompt-chip">📖 "Summarize Pride and Prejudice"</span>
-          <span class="prompt-chip">💡 "Recommend philosophy books for beginners"</span>
+          <span class="prompt-chip">📖 "Tell me about Dracula"</span>
+          <span class="prompt-chip">💡 "Recommend philosophy books"</span>
         </div>
       </div>`);
     bindBooks(document.getElementById('feat'));
@@ -248,37 +251,191 @@
 
   async function viewAI() {
     const a = await api('/ai/architecture');
-    shell(`<h1>✨ E-Read AI Assistant <span class="badge">Phase 2 Sandbox</span></h1>
-      <p class="muted">An intelligent reading companion deeply integrated into E-Read AI DB tools.</p>
-      
-      <div class="card ai-box" style="margin:1.5rem 0">
-        <b>Architecture Preview</b>
-        <p style="margin:.4rem 0">User Prompt → <code>${esc(a.endpoint)}</code> → Native Function Calling → Live DB Querying → Smart AI Synthesis</p>
-        <div class="chat-mock">
-          <input disabled placeholder="Ask E-Read AI about any book... (Unlocks in Phase 2)" aria-label="AI chat input">
-          <button class="btn primary" disabled>Send</button>
+    shell(`<h1>✨ E-Read AI Assistant</h1>
+      <p class="muted">Ask about books and receive answers from the shared catalog. This starter agent uses live catalog tools; open-ended model responses can be added when an AI provider is configured.</p>
+      <section class="card ai-chat" aria-label="Catalog assistant">
+        <div id="aiTranscript" class="ai-transcript" role="log" aria-live="polite"></div>
+        <form id="aiForm" class="ai-chat-form">
+          <label class="sr-only" for="aiMessage">Ask about a book, author, or category</label>
+          <input id="aiMessage" maxlength="1000" placeholder="Ask about books, authors, or categories..." autocomplete="off" required>
+          <button class="btn primary" type="submit">Ask</button>
+        </form>
+        <div class="prompts">
+          <button class="prompt-chip" type="button" data-prompt="Recommend philosophy books">Recommend philosophy books</button>
+          <button class="prompt-chip" type="button" data-prompt="Tell me about Dracula">Tell me about Dracula</button>
+          <button class="prompt-chip" type="button" data-prompt="Compare Frankenstein and Dracula">Compare two books</button>
         </div>
-      </div>
-      
-      <div class="card">
-        <h3>Available Agent Tools</h3>
+      </section>
+      <details class="card agent-tools">
+        <summary><b>Catalog tools</b></summary>
         ${a.tools.map((t) => `<div class="tool"><code>${esc(t.name)}</code><span>${esc(t.description)}</span></div>`).join('')}
-      </div>
-      
-      <div class="card" style="margin-top:1.25rem">
-        <h3>Safety & Integrity Directives</h3>
-        <ul style="padding-left:1.2rem; margin:0.5rem 0 0">${a.safety.map((s) => `<li>${esc(s)}</li>`).join('')}</ul>
-      </div>`);
+      </details>`);
+    const transcript = document.getElementById('aiTranscript');
+    const paintMessages = () => {
+      const entries = state.aiMessages.length ? state.aiMessages : [{
+        role: 'assistant',
+        text: 'Hi! I can search the catalog, look up book details, compare titles, and recommend books. What are you interested in?',
+      }];
+      transcript.innerHTML = entries.map((entry) => `
+        <div class="ai-message ${entry.role === 'user' ? 'user' : 'assistant'}">
+          <div class="ai-bubble">${esc(entry.text)}</div>
+          ${entry.toolCalls?.length ? `<small class="muted">Catalog tool: ${entry.toolCalls.map(esc).join(', ')}</small>` : ''}
+          ${entry.books?.length ? `<div class="grid books ai-result-books">${entry.books.map(bookCard).join('')}</div>` : ''}
+          ${entry.pendingAction ? `<button type="button" class="btn sm confirm-ai-save" data-token="${esc(entry.pendingAction.confirmationToken)}">Save “${esc(entry.pendingAction.book.title)}” to My Library</button>` : ''}
+        </div>`).join('');
+      bindBooks(transcript);
+      transcript.querySelectorAll('.confirm-ai-save').forEach((button) => {
+        button.onclick = async () => {
+          button.disabled = true;
+          try {
+            const result = await api('/ai/chat', { method: 'POST', body: { confirmationToken: button.dataset.token } });
+            state.aiMessages.push({ role: 'assistant', text: result.reply, toolCalls: result.toolCalls, books: result.books });
+            paintMessages();
+          } catch (e) {
+            button.disabled = false;
+            toast(e.message);
+          }
+        };
+      });
+      transcript.scrollTop = transcript.scrollHeight;
+    };
+    paintMessages();
+    const send = async (message) => {
+      if (!message.trim()) return;
+      state.aiMessages.push({ role: 'user', text: message.trim() });
+      paintMessages();
+      const input = document.getElementById('aiMessage');
+      const submit = document.querySelector('#aiForm button[type="submit"]');
+      input.disabled = true; submit.disabled = true;
+      try {
+        const result = await api('/ai/chat', { method: 'POST', body: { message: message.trim() } });
+        state.aiMessages.push({
+          role: 'assistant', text: result.reply, toolCalls: result.toolCalls,
+          books: result.books, pendingAction: result.pendingAction,
+        });
+        paintMessages();
+      } catch (e) {
+        toast(e.message);
+      } finally {
+        input.disabled = false; submit.disabled = false; input.focus();
+      }
+    };
+    document.getElementById('aiForm').onsubmit = (event) => {
+      event.preventDefault();
+      const input = document.getElementById('aiMessage');
+      const message = input.value;
+      input.value = '';
+      send(message);
+    };
+    document.querySelectorAll('[data-prompt]').forEach((button) => {
+      button.onclick = () => send(button.dataset.prompt);
+    });
   }
 
   async function viewAdmin() {
     if (!isAdmin()) { location.hash = '#/dashboard'; return; }
-    const s = await api('/admin/stats');
+    const [s, catalog] = await Promise.all([api('/admin/stats'), api('/admin/books?limit=100')]);
     shell(`<h1>Administrator Dashboard</h1><p class="muted">System metrics and platform analytics.</p>
       <div class="grid stats" style="margin-top:1.5rem">
         ${[['Registered Users', s.users], ['Guest Sessions', s.guests], ['Catalog Books', `${s.books} / ${s.targetBooks}`], ['Total Downloads', s.downloads]]
           .map(([l, v]) => `<div class="card stat"><span class="muted">${l}</span><b>${v}</b></div>`).join('')}
-      </div>`);
+      </div>
+      <section class="card admin-form" style="margin-top:1.5rem">
+        <h2 id="adminFormTitle">Add a book</h2>
+        <form id="adminBookForm">
+          <input id="adminBookId" type="hidden">
+          <div class="admin-form-grid">
+            <div><label for="adminTitle">Title</label><input id="adminTitle" maxlength="500" required></div>
+            <div><label for="adminAuthor">Author</label><input id="adminAuthor" maxlength="500" required></div>
+            <div><label for="adminCategory">Category</label><input id="adminCategory" maxlength="500" required></div>
+            <div><label for="adminYear">Publication year</label><input id="adminYear" type="number" min="-3000" max="${new Date().getFullYear()}"></div>
+            <div><label for="adminLicense">License</label><input id="adminLicense" value="Public Domain" maxlength="500" required></div>
+            <div><label for="adminSource">Source</label><input id="adminSource" value="Project Gutenberg" maxlength="500" required></div>
+            <div class="admin-wide"><label for="adminDownloadUrl">Legal download URL (HTTPS)</label><input id="adminDownloadUrl" type="url" placeholder="https://..." required></div>
+            <div class="admin-wide"><label for="adminDescription">Description</label><textarea id="adminDescription" rows="3" maxlength="4000"></textarea></div>
+          </div>
+          <div class="actions">
+            <button class="btn primary" type="submit" id="adminSave">Add Book</button>
+            <button class="btn" type="button" id="adminReset">Clear</button>
+          </div>
+          <p class="error" id="adminError" role="alert"></p>
+        </form>
+      </section>
+      <section class="card admin-catalog" style="margin-top:1.5rem">
+        <h2>Manage books <span class="muted" style="font:500 .9rem 'Plus Jakarta Sans',sans-serif">(${catalog.total})</span></h2>
+        <div class="admin-table-wrap">
+          <table class="admin-table">
+            <thead><tr><th>Title</th><th>Author</th><th>Category</th><th>Actions</th></tr></thead>
+            <tbody>${catalog.books.map((book) => `<tr>
+              <td>${esc(book.title)}</td><td>${esc(book.author)}</td><td>${esc(book.category)}</td>
+              <td class="admin-actions"><button class="btn sm" type="button" data-edit-book="${book.id}">Edit</button>
+                <button class="btn sm danger-btn" type="button" data-delete-book="${book.id}">Delete</button></td>
+            </tr>`).join('')}</tbody>
+          </table>
+        </div>
+      </section>`);
+    const form = document.getElementById('adminBookForm');
+    const reset = () => {
+      form.reset();
+      document.getElementById('adminBookId').value = '';
+      document.getElementById('adminFormTitle').textContent = 'Add a book';
+      document.getElementById('adminSave').textContent = 'Add Book';
+      document.getElementById('adminError').textContent = '';
+    };
+    document.getElementById('adminReset').onclick = reset;
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      const error = document.getElementById('adminError');
+      error.textContent = '';
+      const id = document.getElementById('adminBookId').value;
+      const body = {
+        title: document.getElementById('adminTitle').value,
+        author: document.getElementById('adminAuthor').value,
+        category: document.getElementById('adminCategory').value,
+        year: document.getElementById('adminYear').value,
+        license: document.getElementById('adminLicense').value,
+        source: document.getElementById('adminSource').value,
+        downloadUrl: document.getElementById('adminDownloadUrl').value,
+        description: document.getElementById('adminDescription').value,
+      };
+      try {
+        await api(id ? `/admin/books/${id}` : '/admin/books', { method: id ? 'PUT' : 'POST', body });
+        toast(id ? 'Book updated' : 'Book added');
+        state.categories = [];
+        await viewAdmin();
+      } catch (e) { error.textContent = e.message; }
+    };
+    document.querySelectorAll('[data-edit-book]').forEach((button) => {
+      button.onclick = () => {
+        const book = catalog.books.find((item) => item.id === Number(button.dataset.editBook));
+        if (!book) return;
+        document.getElementById('adminBookId').value = book.id;
+        document.getElementById('adminTitle').value = book.title;
+        document.getElementById('adminAuthor').value = book.author;
+        document.getElementById('adminCategory').value = book.category;
+        document.getElementById('adminYear').value = book.year ?? '';
+        document.getElementById('adminLicense').value = book.license;
+        document.getElementById('adminSource').value = book.source;
+        document.getElementById('adminDownloadUrl').value = book.downloadUrl;
+        document.getElementById('adminDescription').value = book.description || '';
+        document.getElementById('adminFormTitle').textContent = `Edit: ${book.title}`;
+        document.getElementById('adminSave').textContent = 'Save Changes';
+        document.getElementById('adminError').textContent = '';
+        document.getElementById('adminBookForm').scrollIntoView({ behavior: 'smooth' });
+      };
+    });
+    document.querySelectorAll('[data-delete-book]').forEach((button) => {
+      button.onclick = async () => {
+        const book = catalog.books.find((item) => item.id === Number(button.dataset.deleteBook));
+        if (!book || !confirm(`Delete “${book.title}” from the catalog? Existing favorites, library entries, and download records for this title will also be removed.`)) return;
+        try {
+          await api(`/admin/books/${book.id}`, { method: 'DELETE' });
+          toast('Book deleted');
+          state.categories = [];
+          await viewAdmin();
+        } catch (e) { toast(e.message); }
+      };
+    });
   }
 
   // ---------- book modal ----------
